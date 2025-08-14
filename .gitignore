@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual env
+.venv/
+
+# Data
+/data/interim/
+data/processed/
+!data/processed/player_aliases.csv
+
+# Models and artifacts
+models/
+!models/best_params_*.json
+mlruns/
+*.pkl
+*.joblib
+
+# Reports
+reports/*.png
+models/reports/*.png
+
+# Binary files
+*.parquet
+*.feather
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*.mov
+*.mkv
+*.zip
+*.tar.gz
+*.7z
+*.onnx
+
+# Node
+node_modules/
+app/node_modules/
+app/dist/
+
+# Misc
+.DS_Store
+
