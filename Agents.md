@@ -161,5 +161,6 @@ Feladatok:
 - Kalibrációs görbe ±5% sávban 0–1 tartományban.
 - Frontend: 2 névválasztás → válasz ≤1s (lokál pred), vagy ≤2s (API).
 - Reprodukálhatóság: `make train` → ugyanazok a metrikák ±0.2% ingadozással.
+- A Pull Request binaris fileokat nem tartalmazhat, a .gitignore -ral ki kell szurni azokat.
 
 ---
