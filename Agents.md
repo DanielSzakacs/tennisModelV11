@@ -1,166 +1,264 @@
-## Projekt rövid leírása
+# Agents.md — TennisModelV11
 
-Greenfield ML-projekt: férfi profi teniszmeccsek győztesének előrejelzése 1963–2024 közötti adatok alapján. Forrás CSV: `data/raw/atp_df.csv` (nyers, tisztítatlan). A végcél egy front-end, ahol a felhasználó két játékos nevét kiválasztja, és a rendszer(ek) valószínűségi előrejelzést adnak a győztesre (≥80% pontosság valós, időben visszatartott teszten).
+## Cél
 
-## Célmetrika és elvárások
-
-- **Elsődleges metrika:** pontosság (accuracy) és Brier-score **időalapú, „out-of-time”** teszten (pl. train ≤2019, valid 2020–2022, test 2023–2024).
-- **Küszöb:** ≥80% accuracy a 2023–2024 teszten (best-of-3 és best-of-5 külön riportálva).
-- **Kimenet:** kalibrált győzelmi valószínűség (0–1), + magyarázhatóság (SHAP top-10 feature).
-
-## Adat- és entitáskezelés
-
-- **Forrás:** `data/raw/atp_df.csv`
-- **Entitás feloldás:** játékosnév → kanonikus `player_id` (névváltozatok, ékezetek, duplikátumok kezelése).
-- **Szűrés:** csak ATP Tour/Grand Slam főtáblás egyéni meccsek; qualify/challenger opciósan külön modellbe.
-- **Célváltozó:** `winner` ∈ {0,1} (1 = elsőként megadott “Player A” vagy a CSV `winner_name`/`w_player_id`).
-- **Szivárgás elkerülése:** csak **meccs előtti** információ használható; semmi a meccs kimeneteléből/utólagos aggregátumokból a feature napjáig.
-
-## Javasolt oszlopok (nyers → felhasználható)
-
-Szakértői első körös döntés szükséges az alábbi csoportok alapján:
-
-- **Meccs meta:** dátum, torna, kategória (Grand Slam/ATP 1000/500/250), forduló, pálya típusa (Hard/Clay/Grass/Indoor), város/magasság, best-of (3/5).
-- **Játékosok:** győztes/vesztes nevek és (ha van) egyedi azonosítók; életkor a meccsnapon; kézhasználat; edző (ha elérhető).
-- **Szervamutatók (nyersek):** `w_ace, w_df, w_svpt, w_1stIn, w_1stWon, w_2ndWon, w_bpSaved, w_bpFaced` és ugyanez `l_*`.
-- **Return/egyéb mutatók:** game- és set-eredmények, tie-break jelzők.
-- **Környezeti tényezők:** fedett/nyitott pálya, időjárás proxy (ha elérhető).
-- **Hiányzók/outlierek:** jelölés + kezelési stratégia (ld. Data Analyst feladat).
-
-## Feature engineering (példák)
-
-Kétirányú (A és B játékos) feature-k, majd **különbségként** is (A−B), mert ez erős jel:
-
-- **Szervaráták (meccs-szint, ha a CSV tartalmazza):**
-  - `DoubleFault% = (df/svpt) * 100`
-  - `Ace% = (ace/svpt) * 100`
-  - `1stIn% = (1stIn/svpt) * 100`
-  - `1stWon% = (1stWon/1stIn) * 100`
-  - `2ndWon% = (2ndWon/(svpt-1stIn)) * 100`
-  - **DominanceRatio = (service points won / total svpt) / (opponent’s service points won / opp_svpt)**
-    - Nyers képlet variáns (a felhasználó ötlete alapján loser/winner oldalon):  
-      `DR = ((l_1stWon + l_2ndWon)/l_svpt) / ((w_1stWon + w_2ndWon)/w_svpt)`
-  - `BPSaved% = (bpSaved/bpFaced) * 100` (0-val osztás védelme!)
-- **Idősoros aggregátumok (csak meccs előtti adatokból!):**
-  - gördülő 3/6/12 hónapos teljesítmény ugyanazon/váltott borításon (W/L arány, szett/game különbség, Ace%, DF%).
-  - **Head-to-Head** A vs B történelem (összesen és borításon).
-  - **Elo/Surface-Elo** és rajta form-trend (ΔElo 30/90 nap).
-  - Tornaszint/forduló hatások (pl. GS R16+ tapasztalat).
-  - Friss meccsterhelés (utolsó 14/30 nap meccsszáma, utazási távolság proxy).
-- **Környezeti featurök:** indoor flag, magasság kategória, ország/kontinens hatások.
-
-> Megjegyzés: a felhasználó által adott képletek loser-orientált példák. A rendszer szabályosan számolja ki játékos-szinten mindkét félre, majd képezi az A−B differenciákat és a szimmetrikus H2H mutatókat.
-
-## Modellstratégia
-
-Több modell-paradigma, „champion–challenger”:
-
-1. **Alapvonal:** logisztikus regresszió a kulcskülönbségekre (A−B) + regularizáció (C, penalty).
-2. **Gradiens boosting:** XGBoost/LightGBM/CatBoost tabuláris jellemzőkre.
-3. **Elo-család:** Surface-aware Elo, kiterjesztve H2H és korhoz igazított kimenettel; a „name-only” inferenciát az entitás-featurek biztosítják.
-4. **Kalibráció:** Platt/Isotonic a validációs időszeleten.
-5. **Ensemble:** súlyozott átlagolás vagy stacking (LR meta).
-
-## Kísérleti protokoll
-
-- **Időalapú split:** Train ≤2019, Val 2020–2022, Test 2023–2024 (fixált seed).
-- **Csoport-szűrők riportja:** Surface, best-of, torna-szint, H2H megléte vs nincs.
-- **Osztály-eloszlás:** winner/loser 50–50 körüli, de ellenőrzendő (up-/downsampling TILOS időszivárgás miatt).
-- **Metadokumentáció:** minden feature definíciója, cut-off dátum.
-
-## Metrikák és riportok
-
-- Accuracy, LogLoss, Brier, AUC, **Reliability plot** (kalibráció), **Confusion**.
-- Csoportonkénti bontás (surface, best-of-3/5, rangsor decilis).
-- **Explainability:** globális és lokális SHAP top-10.
-- **Model card** + leírás a korlátokról és adatelfogultságokról.
-
-## Munkafolyamat és handoffok
-
-### 1) Tennis Szakértő Agent
-
-Feladatok:
-
-- A nyers oszlopok áttekintése, hasznos/tiltólista (adat-szivárgás gyanús oszlopok listája).
-- Minimum szükséges meta-oszlopok kijelölése (date, tournament, round, surface, best-of, player names/ids).
-  Kimenetek:
-- `docs/columns_decision.md`
-- `docs/leakage_watchlist.md`
-
-### 2) Data Analyst Agent
-
-Feladatok:
-
-- EDA: hiányzók, outlierek, eloszlások (winner/loser), felvételi szűrések.
-- Dtype normalizálás, értékegység-egyeztetés, szótárak (surface, round, level).
-- Hiánykezelés terv: median/most frequent, „unknown” kategória, időablakos imputálás.
-  Kimenetek:
-- `notebooks/01_eda.ipynb`
-- `data/processed/base.parquet` (+ adat-dokumentáció)
-
-### 3) Data Engineer Agent
-
-Feladatok:
-
-- Feature pipeline (python lib vagy DAG): idősoros aggregációk **leak-proof** ablakokkal.
-- Entitás-normalizálás: név→player_id, alias-map, fuzzy matching.
-- Reproducibilis csomag (`src/features/`, `src/data/`), unit tesztek.
-  Kimenetek:
-- `src/` könyvtár modulok, `tests/`, `Makefile`, `pyproject.toml`
-- `data/processed/features_train.parquet`, `features_infer.parquet`
-
-### 4) ML Engineer Agent
-
-Feladatok:
-
-- Alapmodell + GBM-k család, hiperparaméter-keresés (optuna/sklearn CV **időalapú**).
-- Kalibráció, ensemble, mentés (onnx/pkl), pred API (FastAPI).
-- SHAP/Permutation importance riportok.
-  Kimenetek:
-- `models/` (verziózott), `mlruns/` (MLflow), `src/train.py`, `src/infer.py`
-
-### 5) MLOps Agent
-
-Feladatok:
-
-- MLflow tracking, adat- és modellverziózás (DVC/MLflow Artifacts).
-- CI (pytest, ruff, mypy), konténer (Dockerfile), infra IaC minták (opcionális).
-- Monitorozás: drift, teljesítmény 2025+ éles adatokon (ha lesz feed).
-  Kimenetek:
-- `.github/workflows/ci.yml`, `Dockerfile`, `docs/model_card.md`
-
-### 6) Frontend Engineer Agent
-
-Feladatok:
-
-- Web UI: két játékos kiválasztása (typeahead/combobox), opcionális meta (surface, best-of).
-- Válasz: győzelmi valószínűség(ek), confidence/kalibráció jelzés, kulcs-featurek top-5.
-- Hibakezelés: ismeretlen játékos → javasolt kanonikus név.
-  Kimenetek:
-- `app/` (React + Tailwind), `src/api/client.ts`, demo deploy.
-
-## Mappa-struktúra (javaslat)
-
-├─ data/
-│ ├─ raw/atp_df.csv
-│ └─ processed/
-├─ src/
-│ ├─ data/ # load/clean
-│ ├─ features/ # leak-safe featurization
-│ ├─ models/ # train/infer
-│ └─ api/ # FastAPI service
-├─ notebooks/
-├─ models/
-├─ app/ # frontend
-├─ tests/
-└─ docs/
-
-## Elfogadási kritériumok
-
-- Időalapú teszten (2023–2024) **≥80% accuracy**, és javuló Brier-score az alapvonalhoz képest.
-- Kalibrációs görbe ±5% sávban 0–1 tartományban.
-- Frontend: 2 névválasztás → válasz ≤1s (lokál pred), vagy ≤2s (API).
-- Reprodukálhatóság: `make train` → ugyanazok a metrikák ±0.2% ingadozással.
-- A Pull Request binaris fileokat nem tartalmazhat, a .gitignore -ral ki kell szurni azokat.
+A projekt célja, hogy a teniszezők múltbeli meccsadatai alapján **megbecsüljük, ki nyeri a következő mérkőzést**, és ezt egy újrafuttatható, adatvezérelt csővezetéssel és egy egyszerű felhasználói felületen tegyük elérhetővé.
 
 ---
+
+## Forrásadatok (datasource)
+
+- Időtáv: **1963–2024**.
+- Szerkezet: egy sor egy lejátszott mérkőzés, mezők csoportosítva \*_winner / winner\__ \*\* és \*_loser / loser\__ \*\* prefixel.
+- Fontos: sok jellemzőt **időben eltolva (lag)** kell képezni, hogy ne legyen **data leakage**.
+
+### Leakage elkerülése
+
+- Minden „múltbeli teljesítmény” jellegű feature-t **mérkőzés-időpont előtti adatokból** kell számolni (rolling/exp. rolling ablakok).
+- „Head‑to‑head” és „recent form” mutatók a meccs napjáig bezárólag számolandók.
+- Idő alapú tanítás/validálás/test felosztás, **nincs véletlen keverés a teljes idősoron**.
+
+---
+
+## Közös elvárások és technikai keretek
+
+- **Tech stack (requirements.txt)**: `pandas`, `numpy`, `scikit-learn`, `matplotlib`, `seaborn`, `streamlit`, `joblib`.
+- **Kódstílus**: minden függvénynek legyen **docstring**‑je (röviden leírva, mit csinál; bemenet/kimenet; feltételezések).
+- **Reprodukálhatóság**: rögzített random seed(ek); determinisztikus futás ahol lehetséges.
+- **Fájlkezelés**: minden script **idempotens** legyen (többszöri futtatás nem rontja az állapotot).
+- **Naplózás**: írjunk naplókat a `/logs` mappába (pl. `training.log`, `prep.log`).
+- **Kimenő artefaktok**: modellek a `/models`, metrikák a `/reports`, előkészített adat a `/data/prep`.
+
+### Projekt mappaszerkezet (javaslat)
+
+```
+.
+├─ data/
+│  ├─ raw/               # forrás (pl. atp_df.csv)
+│  ├─ interim/           # átmeneti fájlok (ellenőrzés, QC)
+│  └─ prep/              # véglegesített tanító-/predikciós dataset(ek)
+├─ models/               # .joblib modellek és preprocesszorok
+├─ notebooks/            # EDA, jegyzetek (opcionális)
+├─ reports/
+│  ├─ figures/           # ábrák (CM, ROC stb.)
+│  └─ metrics/           # JSON/CSV metrikák
+├─ scripts/
+│  ├─ make_dataset.py    # adat-előkészítő pipeline (Data Engineer)
+│  └─ train_models.py    # modellek tanítása (ML Engineer)
+├─ app.py                # Streamlit frontend (Frontend Agent)
+├─ requirements.txt
+└─ README.md
+```
+
+---
+
+## Szerepkörök, feladatok, átadások
+
+### 1) Data Analyst Agent
+
+**Fő feladat**: Forrásadatok feltérképezése, tisztítás, hiányok/outlierek kezelése, új jellemzők tervezése.
+
+**Tevékenységek**
+
+- **Adatminőség**: hiányzó értékek azonosítása; pótlás **mediánnal** (player‑szintű medián, ha elérhető, különben globális), vagy a megjelölt szabályok szerint sorok/mezők eldobása.
+- **Outlierek**: robusztus szabályok (pl. IQR/med. abs. dev.) szerinti jelölés; szélsőségek csonkolása (winsorization) vagy eltávolítása indoklással.
+- **EDA**: alap statisztikák; időbeli trendek; felszín (surface), torna, kör (round) szerinti bontások; győztes/vesztes eloszlások.
+- **Head‑to‑head**: játékospárok egymás elleni története (győzelem/vereség számláló, utolsó találkozók).
+- **Feature‑tervezés (példák)**:
+
+  - **ELO / rating** és **rating‑különbség**.
+  - **Recent form** (utolsó N mérkőzés win%); **rolling serve/return** mutatók.
+  - **Age diff, rank diff**, utazási/borítás preferencia (surface win%).
+  - **Head‑to‑head diff** és „clutch” mutatók (TB/deciding set statisztikák, ha elérhető).
+
+- **Időkezelés**: minden aggregációt **a mérkőzés dátuma előtti adatokból** számít (lag, rolling).
+
+**Átadandók**
+
+- Rövid **analitikai jegyzet** (Markdown) az észlelt adatminőségi kérdésekről és döntésekről.
+- **Feature‑specifikáció** tételesen (név, definíció, ablak, szint: player/pair/match, leakage‑védelmi megjegyzés).
+
+**Elfogadási feltételek (DoD)**
+
+- Hiánykezelési és outlier‑szabályok dokumentálva és szkriptbe ültetve.
+- Feature‑lista jóváhagyva, időbeli korrektség igazolva mintapéldákkal.
+
+---
+
+### 2) Data Engineer Agent
+
+**Fő feladat**: Újrafuttatható, idempotens **adat‑pipeline** megírása.
+
+**Parancs és elvárt működés**
+
+```bash
+python scripts/make_dataset.py
+```
+
+- Bemenet: `/data/raw/atp_df.csv`.
+
+- Lépések (magas szinten):
+
+  1. Beolvasás, típusok és dátumok normalizálása.
+  2. Tisztítás (hiányok/outlierek) a Data Analyst által lefektetett szabályok szerint.
+  3. **Player‑idővonal** felépítése: időrend, lag/rolling mutatók képzése.
+  4. **Párosítás standardizálása**: minden meccs **(A,B)** nézőpontú, bináris címkével (`label=1`, ha A nyer). (A és B determinisztikusan rendezve: pl. ABC sorrend, hogy ne legyen duplikáció.)
+  5. **Feature engineering** implementálása (spec szerint).
+  6. QC/validáció (sor- és oszlopszámok, hiányok aránya, alap eloszlások), naplózás.
+  7. Kimenet mentése CSV‑be: `/data/prep/features.csv`.
+
+- Kimenetek:
+
+  - `/data/prep/features.csv` (tanításra és predikcióra alkalmas táblázat)
+  - QC riport: `/reports/metrics/prep_summary.json`
+  - Napló: `/logs/prep.log`
+
+**Elfogadási feltételek (DoD)**
+
+- Script többször futtatva is determinisztikus kimenetet ad.
+- Oszlopnév‑szerződés dokumentálva (lásd „Feature‑szerződés”).
+- Időalapú szivárgás kizárva (unit teszttel/ellenőrzéssel).
+
+---
+
+### 3) ML Engineer Agent
+
+**Fő feladat**: Egy vagy több olyan modell(ek) fejlesztése, amely(ek) a mérkőzés győztesét **>= 80% pontossággal** jelzi(k) előre.
+
+**Parancs és elvárt működés**
+
+```bash
+python scripts/train_models.py
+```
+
+- Bemenet: `/data/prep/features.csv`.
+- Tanítási protokoll:
+
+  - Időalapú felosztás (javaslat):
+
+    - **Train**: 1963–2022.12.31
+    - **Validáció**: 2023
+    - **Teszt**: 2024
+
+  - **TimeSeriesSplit** vagy „expanding window” CV.
+  - Cél: bináris `label` (A nyer?) és **valószínűség** becslés.
+
+- Modellek (példák, tetszőleges kombináció):
+
+  - `LogisticRegression`, `RandomForestClassifier`, `GradientBoostingClassifier`/`XGBoost` helyett GB baseline scikit‑learnben (ha XGBoost nincs a requirements‑ben, maradjunk sklearn‑nél), `SVC(probability=True)`.
+  - **Ensemble**: soft‑voting a legjobb 2–3 modellre.
+
+- **Hyperparaméter‑kutatás**: `GridSearchCV` / `RandomizedSearchCV` a CV‑sémán.
+- **Metrikák**: `accuracy`, `roc_auc`, `log_loss`, `precision/recall`, kalibrációs görbe. Követelmény: **accuracy ≥ 0.80** a teszten.
+- **Kimenetek**:
+
+  - Legjobb modell(ek) és preprocesszor(ok): `/models/model.joblib` (vagy `model_*.joblib`).
+  - Metrikák: `/reports/metrics/train_results.json` + osztási dátumok.
+  - Ábrák: `/reports/figures/{confusion_matrix, roc_curve, calibration}.png`.
+  - Napló: `/logs/training.log`.
+
+**Elfogadási feltételek (DoD)**
+
+- Script hiba nélkül fut, elmenti az artefaktokat, naplóz.
+- Tesztkészlet‑eredmények dokumentálva; **≥80% pontosság** teljesül vagy indokolt iterációs terv a javításhoz.
+- Modellek `joblib`‑bal tölthetők és `predict_proba`‑t adnak.
+
+---
+
+### 4) Frontend Agent
+
+**Fő feladat**: Streamlit alapú felület, ahol a felhasználó két játékost kiválaszt, és megkapja a **győzelmi valószínűséget**.
+
+**Követelmények**
+
+- Az alkalmazás: `app.py` (Streamlit).
+- UI elemek:
+
+  - Két **dropdown** a játékosok nevére (A és B).
+  - Gomb: **„Predict”**.
+  - Kimenet: valószínűség (A nyer), és opcionális vizualizációk **seaborn**‑nal (eloszlások, head‑to‑head mini‑összegzés).
+
+- Adatkiválasztás:
+
+  - A frontend **alapértelmezésben** a kiválasztott játékosok **legfrissebb** (a /data/prep‑ben elérhető utolsó dátumig számított) feature‑vektorait adja át a modellnek.
+  - Ha nincs friss rekord, jelezze a UI és kérjen alternatívát (pl. korábbi év vagy alap baseline).
+
+- Modellbetöltés: `/models/model.joblib`.
+- Megjelenítés: százalékos esély, H2H összefoglaló (ha elérhető), releváns utolsó forma.
+
+**Elfogadási feltételek (DoD)**
+
+- `streamlit run app.py` alatt indul, hiba nélkül.
+- Modell betöltése és predikció működik.
+- Input‑védelem (A ≠ B), hiányzó modell/adat esetén barátságos üzenet.
+
+---
+
+## Feature‑szerződés (részlet minta)
+
+A `/data/prep/features.csv` minimális oszlopai:
+
+| Oszlop                                                        | Típus      | Leírás                                                           |
+| ------------------------------------------------------------- | ---------- | ---------------------------------------------------------------- |
+| `match_id`                                                    | string/int | Egyedi azonosító (forrásból vagy konstruált).                    |
+| `date`                                                        | date       | Mérkőzés dátuma.                                                 |
+| `player_a`, `player_b`                                        | string     | Játékosnevek/azonosítók.                                         |
+| `label`                                                       | int {0,1}  | 1, ha `player_a` nyer; különben 0.                               |
+| `elo_a`, `elo_b`, `elo_diff`                                  | float      | ELO és különbsége a dátum előtt számítva.                        |
+| `h2h_a_over_b`, `h2h_b_over_a`, `h2h_diff`                    | int/float  | Egymás ellen eddigi mérleg a meccs napjáig.                      |
+| `recent_winrate_a`, `recent_winrate_b`, `recent_winrate_diff` | float      | Utolsó N (pl. 10) meccs win%.                                    |
+| `surface_winrate_*`                                           | float      | Borítás szerinti win% (a dátum előtt).                           |
+| `rank_a`, `rank_b`, `rank_diff`                               | float/int  | Hivatalos ranglista ha elérhető; különbség.                      |
+| `age_a`, `age_b`, `age_diff`                                  | float      | Életkor a meccs napján.                                          |
+| `serve_*`, `return_*`                                         | float      | Rolling szerválási/visszafogadási mutatók (pl. pont%/BP mentés). |
+
+> Megjegyzés: minden `*_diff = *_a - *_b`.
+
+---
+
+## Parancsok összefoglaló
+
+```bash
+# 1) Adat-előkészítés
+python scripts/make_dataset.py
+
+# 2) Modellek tanítása
+python scripts/train_models.py
+
+# 3) Frontend (lokális)
+streamlit run app.py
+```
+
+---
+
+## Minőségbiztosítás
+
+- **Unit/integ tesztek** kulcs lépésekre (lag/rolling korrekt‑e; duplikációk nincsenek; label helyes).
+- **Validációs ellenőrzőlista**: nincs jövőből származó adat; hiányok aránya elfogadható; metrikák rögzítve.
+- **Naplók és riportok**: futásidő, sor-/oszlopszámok, hibák figyelmeztetések.
+
+---
+
+## Kódolási irányelvek (rövid)
+
+- Docstring minden függvényhez (cél, bemenet/kimenet, kivételek).
+- Tiszta függvények, ahol lehet (mellékhatás minimalizálása).
+- Paraméterezhetőség: konstansokat tegyük a fájl elejére vagy parse‑oljuk CLI‑ből.
+- Random seed(ek) központosítva (pl. `RANDOM_STATE=42`).
+
+---
+
+## Elfogadási kritériumok összesítve
+
+- [ ] Adat‑pipeline újrafuttatható, idempotens, dokumentált.
+- [ ] Feature‑k időben helyesek, leakage kizárva.
+- [ ] Tesztkészlet **pontosság ≥ 80%**.
+- [ ] Artefaktok és riportok mentve a megfelelő mappákba.
+- [ ] Streamlit frontend működik, két játékos kiválasztható, esély megjelenik.
+
+---
+
+## Megjegyzések
+
+- Ha a 80% pontosság tartósan nem érhető el, javasolt: további feature‑k (pl. turné‑intenzitás, utazási távolságok), kalibráció (`CalibratedClassifierCV`), és/vagy egyszerűbb **stacking** ensemble.
+- A teljes folyamat legyen **önállóan dokumentálható** a `README.md`‑ben rövid indoklásokkal és futtatási példákkal.
