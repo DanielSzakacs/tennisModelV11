@@ -2,3 +2,10 @@
 app/
 
 .png
+
+# Ignore generated artifacts
+data/**/*.csv
+logs/*.log
+models/*.joblib
+reports/**/*.json
+reports/**/*.png
